@@ -1,6 +1,323 @@
 import streamlit as st
+import numpy as np
+import pandas as pd
+import librosa
+import pickle
+from io import BytesIO
 
-st.title("🎈 My new app")
-st.write(
-    "Let's start building! For help and inspiration, head over to [docs.streamlit.io](https://docs.streamlit.io/)."
+# Page config
+st.set_page_config(
+    page_title="ML Classification Suite",
+    page_icon="🤖",
+    layout="wide"
 )
+
+# Custom CSS
+st.markdown("""
+    <style>
+    .main { padding: 2rem; }
+    .stButton>button { width: 100%; }
+    .prediction-box {
+        padding: 1.5rem;
+        border-radius: 0.5rem;
+        background-color: #f0f2f6;
+        margin: 1rem 0;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Load models
+@st.cache_resource
+def load_audio_models():
+    try:
+        with open('audio_scaler.pkl', 'rb') as f:
+            scaler = pickle.load(f)
+        with open('audio_svm_model.pkl', 'rb') as f:
+            svm = pickle.load(f)
+        with open('audio_lr_model.pkl', 'rb') as f:
+            lr = pickle.load(f)
+        with open('audio_perceptron_model.pkl', 'rb') as f:
+            perceptron = pickle.load(f)
+        with open('audio_dnn_model.pkl', 'rb') as f:
+            dnn = pickle.load(f)
+        return scaler, {'SVM': svm, 'Logistic Regression': lr, 'Perceptron': perceptron, 'DNN': dnn}
+    except:
+        return None, None
+
+@st.cache_resource
+def load_defect_models():
+    try:
+        with open('defect_scaler.pkl', 'rb') as f:
+            scaler = pickle.load(f)
+        with open('defect_svm_model.pkl', 'rb') as f:
+            svm = pickle.load(f)
+        with open('defect_lr_model.pkl', 'rb') as f:
+            lr = pickle.load(f)
+        with open('defect_perceptron_model.pkl', 'rb') as f:
+            perceptron = pickle.load(f)
+        with open('defect_dnn_model.pkl', 'rb') as f:
+            dnn = pickle.load(f)
+        return scaler, {'SVM': svm, 'Logistic Regression': lr, 'Perceptron': perceptron, 'DNN': dnn}
+    except:
+        return None, None
+
+# Feature extraction
+def extract_audio_features(audio_array, sr=16000):
+    try:
+        # Pad or truncate to 3 seconds
+        target_length = sr * 3
+        if len(audio_array) > target_length:
+            audio_array = audio_array[:target_length]
+        else:
+            audio_array = np.pad(audio_array, (0, target_length - len(audio_array)), mode='constant')
+        
+        # MFCC
+        mfccs = librosa.feature.mfcc(y=audio_array, sr=sr, n_mfcc=13)
+        mfccs_mean = np.mean(mfccs, axis=1)
+        mfccs_std = np.std(mfccs, axis=1)
+        
+        # Mel spectrogram
+        mel = librosa.feature.melspectrogram(y=audio_array, sr=sr, n_mels=40)
+        mel_mean = np.mean(mel, axis=1)
+        
+        # Chroma
+        chroma = librosa.feature.chroma_stft(y=audio_array, sr=sr)
+        chroma_mean = np.mean(chroma, axis=1)
+        
+        # Spectral contrast
+        contrast = librosa.feature.spectral_contrast(y=audio_array, sr=sr)
+        contrast_mean = np.mean(contrast, axis=1)
+        
+        # Zero crossing rate
+        zcr = librosa.feature.zero_crossing_rate(audio_array)
+        zcr_mean = np.mean(zcr)
+        
+        features = np.concatenate([mfccs_mean, mfccs_std, mel_mean, chroma_mean, contrast_mean, [zcr_mean]])
+        return features
+    except Exception as e:
+        st.error(f"Error extracting features: {e}")
+        return None
+
+# Main app
+def main():
+    st.title("🤖 Machine Learning Classification Suite")
+    st.markdown("### Choose a task below")
+    
+    # Task selection
+    task = st.radio("Select Task:", ["Audio Deepfake Detection", "Software Defect Prediction"], horizontal=True)
+    
+    st.markdown("---")
+    
+    if task == "Audio Deepfake Detection":
+        audio_classification_app()
+    else:
+        defect_prediction_app()
+
+def audio_classification_app():
+    st.header("🎵 Urdu Deepfake Audio Detection")
+    
+    # Load models
+    scaler, models = load_audio_models()
+    
+    if models is None:
+        st.error("⚠️ Models not found. Please train the models first.")
+        return
+    
+    # Model selection
+    model_choice = st.selectbox("Select Model:", list(models.keys()))
+    
+    # File upload
+    audio_file = st.file_uploader("Upload Audio File (WAV, MP3)", type=['wav', 'mp3'])
+    
+    if audio_file is not None:
+        st.audio(audio_file)
+        
+        if st.button("🔍 Analyze Audio", type="primary"):
+            with st.spinner("Processing audio..."):
+                try:
+                    # Load audio
+                    audio_bytes = audio_file.read()
+                    audio_array, sr = librosa.load(BytesIO(audio_bytes), sr=16000)
+                    
+                    # Extract features
+                    features = extract_audio_features(audio_array, sr)
+                    
+                    if features is not None:
+                        features_scaled = scaler.transform(features.reshape(1, -1))
+                        
+                        # Predict
+                        model = models[model_choice]
+                        prediction = model.predict(features_scaled)[0]
+                        
+                        # Get probabilities
+                        if hasattr(model, 'predict_proba'):
+                            proba = model.predict_proba(features_scaled)[0]
+                        else:
+                            proba = [0.5, 0.5]
+                        
+                        # Display results
+                        st.markdown("### 📊 Prediction Results")
+                        
+                        col1, col2 = st.columns(2)
+                        
+                        with col1:
+                            st.metric("Classification", "🟢 Bonafide" if prediction == 0 else "🔴 Deepfake")
+                        
+                        with col2:
+                            confidence = proba[prediction] * 100
+                            st.metric("Confidence", f"{confidence:.2f}%")
+                        
+                        # Probability scores
+                        st.markdown("### 📈 Probability Scores")
+                        prob_df = pd.DataFrame({
+                            'Class': ['Bonafide', 'Deepfake'],
+                            'Probability': [f"{proba[0]*100:.2f}%", f"{proba[1]*100:.2f}%"]
+                        })
+                        st.dataframe(prob_df, use_container_width=True)
+                        
+                except Exception as e:
+                    st.error(f"Error processing audio: {e}")
+
+def defect_prediction_app():
+    st.header("🐛 Multi-Label Software Defect Prediction")
+    
+    # Load models
+    scaler, models = load_defect_models()
+    
+    if models is None:
+        st.error("⚠️ Models not found. Please train the models first.")
+        return
+    
+    # Model selection
+    model_choice = st.selectbox("Select Model:", list(models.keys()))
+    
+    # Input method selection
+    input_method = st.radio("Input Method:", ["Upload File", "Manual Entry"], horizontal=True)
+    
+    if input_method == "Upload File":
+        uploaded_file = st.file_uploader("Upload CSV or XLSX file", type=['csv', 'xlsx'])
+        
+        if uploaded_file is not None:
+            try:
+                if uploaded_file.name.endswith('.xlsx'):
+                    df = pd.read_excel(uploaded_file)
+                else:
+                    df = pd.read_csv(uploaded_file)
+                
+                st.write("### 📄 Uploaded Data Preview")
+                st.dataframe(df.head(), use_container_width=True)
+                
+                if st.button("🔍 Predict Defects", type="primary"):
+                    with st.spinner("Making predictions..."):
+                        try:
+                            X = df.values
+                            X_scaled = scaler.transform(X)
+                            
+                            model = models[model_choice]
+                            predictions = model.predict(X_scaled)
+                            
+                            # Get probabilities
+                            if hasattr(model, 'predict_proba'):
+                                if model_choice in ['SVM', 'Logistic Regression']:
+                                    probas = np.array([est.predict_proba(X_scaled)[:, 1] for est in model.estimators_]).T
+                                else:
+                                    probas = model.predict_proba(X_scaled)
+                            else:
+                                probas = predictions.astype(float)
+                            
+                            # Display results
+                            st.markdown("### 📊 Prediction Results")
+                            
+                            results_df = pd.DataFrame(predictions, columns=[f'Defect_{i+1}' for i in range(predictions.shape[1])])
+                            st.dataframe(results_df, use_container_width=True)
+                            
+                            # Summary statistics
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Total Samples", len(predictions))
+                            with col2:
+                                st.metric("Total Defects Detected", predictions.sum())
+                            with col3:
+                                avg_defects = predictions.sum(axis=1).mean()
+                                st.metric("Avg Defects/Sample", f"{avg_defects:.2f}")
+                            
+                            # Download results
+                            csv = results_df.to_csv(index=False)
+                            st.download_button(
+                                label="📥 Download Predictions",
+                                data=csv,
+                                file_name="defect_predictions.csv",
+                                mime="text/csv"
+                            )
+                            
+                        except Exception as e:
+                            st.error(f"Error making predictions: {e}")
+                            
+            except Exception as e:
+                st.error(f"Error reading file: {e}")
+    
+    else:  # Manual Entry
+        st.markdown("### ✍️ Enter Feature Values")
+        
+        # Create input fields (assuming 20 features)
+        n_features = 20
+        cols = st.columns(4)
+        feature_values = []
+        
+        for i in range(n_features):
+            with cols[i % 4]:
+                val = st.number_input(f"Feature {i+1}", value=0.0, format="%.4f", key=f"feat_{i}")
+                feature_values.append(val)
+        
+        if st.button("🔍 Predict Defects", type="primary"):
+            try:
+                X = np.array(feature_values).reshape(1, -1)
+                X_scaled = scaler.transform(X)
+                
+                model = models[model_choice]
+                prediction = model.predict(X_scaled)[0]
+                
+                # Get probabilities
+                if hasattr(model, 'predict_proba'):
+                    if model_choice in ['SVM', 'Logistic Regression']:
+                        proba = np.array([est.predict_proba(X_scaled)[0, 1] for est in model.estimators_])
+                    else:
+                        proba = model.predict_proba(X_scaled)[0]
+                else:
+                    proba = prediction.astype(float)
+                
+                # Display results
+                st.markdown("### 📊 Prediction Results")
+                
+                defect_labels = [f"Defect_{i+1}" for i in range(len(prediction))]
+                detected_defects = [label for label, pred in zip(defect_labels, prediction) if pred == 1]
+                
+                if detected_defects:
+                    st.warning(f"⚠️ Detected {len(detected_defects)} defect(s): {', '.join(detected_defects)}")
+                else:
+                    st.success("✅ No defects detected!")
+                
+                # Show probabilities
+                st.markdown("### 📈 Defect Probabilities")
+                prob_df = pd.DataFrame({
+                    'Defect': defect_labels,
+                    'Prediction': ['Yes' if p == 1 else 'No' for p in prediction],
+                    'Confidence': [f"{prob*100:.2f}%" for prob in proba]
+                })
+                st.dataframe(prob_df, use_container_width=True)
+                
+            except Exception as e:
+                st.error(f"Error making prediction: {e}")
+
+# Footer
+def add_footer():
+    st.markdown("---")
+    st.markdown("""
+        <div style='text-align: center; color: #666;'>
+            <p>Built with Streamlit | Models: SVM, Logistic Regression, Perceptron, DNN</p>
+        </div>
+    """, unsafe_allow_html=True)
+
+if __name__ == "__main__":
+    main()
+    add_footer()
